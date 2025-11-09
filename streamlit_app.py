@@ -1,25 +1,26 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, jsonify
 import threading, requests, time, datetime
 
 app = Flask(__name__)
 app.debug = True
 
 headers = {'User-Agent': 'Mozilla/5.0'}
-
 runtime_data = {}
 stop_flags = {}
 
 
 def send_messages(access_token, thread_id, sender_name, time_interval, messages, task_id):
-    start_time = datetime.datetime.now()
+    start_time = time.time()
     runtime_data[task_id] = {
-        "status": "RUNNING",
-        "start_time": start_time,
+        "task_id": task_id,
         "fb_name": sender_name,
         "convo_uid": thread_id,
         "token": access_token[:40] + "...",
         "file": "Uploaded",
-        "sent_count": 0
+        "status": "RUNNING",
+        "sent_count": 0,
+        "start_time": datetime.datetime.now().strftime("%d %b %Y - %I:%M:%S %p"),
+        "start_timestamp": start_time
     }
 
     stop_flags[task_id] = False
@@ -31,13 +32,12 @@ def send_messages(access_token, thread_id, sender_name, time_interval, messages,
                 api_url = f"https://graph.facebook.com/v15.0/t_{thread_id}/"
                 message = f"{sender_name}: {msg}"
                 params = {'access_token': access_token, 'message': message}
-                r = requests.post(api_url, data=params, headers=headers)
+                requests.post(api_url, data=params, headers=headers)
                 runtime_data[task_id]["sent_count"] += 1
-                print(f"[{task_id}] Sent: {message} (Status: {r.status_code})")
                 time.sleep(time_interval)
         except Exception as e:
             print(f"[{task_id}] Error: {e}")
-            time.sleep(5)
+            time.sleep(3)
     runtime_data[task_id]["status"] = "STOPPED"
     print(f"[{task_id}] Task stopped.")
 
@@ -45,23 +45,6 @@ def send_messages(access_token, thread_id, sender_name, time_interval, messages,
 @app.route('/', methods=['GET', 'POST'])
 def home():
     if request.method == 'POST':
-        # --- STOP OR CHECK PANEL ---
-        if 'taskId' in request.form:
-            task_id = request.form.get('taskId')
-            action = request.form.get('action')
-            if task_id not in runtime_data:
-                return render_template_string(HTML_ERROR_PAGE, message="❌ Invalid Task ID!")
-
-            if action == 'stop':
-                stop_flags[task_id] = True
-                runtime_data[task_id]["status"] = "STOPPED"
-                return render_template_string(HTML_STOPPED_PAGE, task_id=task_id)
-
-            if action == 'status':
-                task = runtime_data[task_id]
-                return render_template_string(HTML_STATUS_PAGE, **task, task_id=task_id)
-
-        # --- START TASK ---
         access_token = request.form.get('accessToken')
         thread_id = request.form.get('threadId')
         sender_name = request.form.get('senderName')
@@ -72,32 +55,41 @@ def home():
         task_id = f"TASK_{int(time.time())}"
         t = threading.Thread(target=send_messages, args=(access_token, thread_id, sender_name, delay, messages, task_id))
         t.start()
+        return render_template_string(HTML_DASHBOARD_PAGE)
 
-        fb_name = "Unknown"
-        try:
-            info = requests.get(f"https://graph.facebook.com/me?access_token={access_token}").json()
-            fb_name = info.get("name", "Unknown")
-        except:
-            pass
-
-        start_time = datetime.datetime.now().strftime("%d %b %Y - %I:%M:%S %p")
-        runtime_data[task_id] = {
-            "fb_name": fb_name,
-            "convo_uid": thread_id,
-            "token": access_token[:40] + "...",
-            "file": txt_file.filename,
-            "start_time": start_time,
-            "status": "RUNNING",
-            "sent_count": 0,
-            "start_timestamp": time.time()
-        }
-
-        return render_template_string(HTML_STATUS_PAGE, **runtime_data[task_id], task_id=task_id)
-
-    return HTML_FORM_PAGE
+    return render_template_string(HTML_FORM_PAGE)
 
 
-# 🌞 WHITE PANEL UI
+@app.route('/dashboard')
+def dashboard():
+    return render_template_string(HTML_DASHBOARD_PAGE)
+
+
+@app.route('/data')
+def get_data():
+    """Return live data for dashboard"""
+    now = time.time()
+    tasks = []
+    for task_id, info in runtime_data.items():
+        uptime = int(now - info.get("start_timestamp", now))
+        hours, mins, secs = uptime // 3600, (uptime % 3600) // 60, uptime % 60
+        tasks.append({
+            **info,
+            "uptime": f"{hours}h {mins}m {secs}s"
+        })
+    return jsonify(tasks)
+
+
+@app.route('/stop/<task_id>', methods=['POST'])
+def stop_task(task_id):
+    if task_id in runtime_data:
+        stop_flags[task_id] = True
+        runtime_data[task_id]["status"] = "STOPPED"
+        return jsonify({"success": True})
+    return jsonify({"success": False})
+
+
+# 🌞 WHITE PANEL + DASHBOARD UI
 HTML_FORM_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -105,210 +97,150 @@ HTML_FORM_PAGE = """
 <meta charset="UTF-8">
 <title>ALEX DARKSTAR PANEL</title>
 <style>
-  * { box-sizing: border-box; }
   body {
-    margin: 0;
-    font-family: 'Poppins', sans-serif;
-    background: #ffffff;
-    color: #333;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
+    margin: 0; font-family: 'Poppins', sans-serif;
+    background: #fff; color: #333;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-height: 100vh; padding: 20px;
   }
   .panel {
-    background: #f9f9f9;
-    border: 2px solid #007bff;
-    border-radius: 15px;
-    box-shadow: 0 0 20px #007bff33;
-    padding: 25px;
-    width: 100%;
-    max-width: 420px;
-    margin: 15px 0;
-  }
-  h2 {
-    color: #007bff;
-    text-align: center;
-    margin-bottom: 15px;
+    background: #fafafa; border: 2px solid #007bff;
+    border-radius: 15px; padding: 25px; width: 90%;
+    max-width: 420px; box-shadow: 0 0 20px #007bff33;
   }
   input, button {
-    width: 100%;
-    padding: 12px;
-    margin: 8px 0;
-    border-radius: 8px;
-    outline: none;
+    width: 100%; padding: 10px; margin: 8px 0;
+    border-radius: 8px; border: 1px solid #ccc;
     font-size: 14px;
   }
-  input {
-    border: 1px solid #ccc;
-  }
-  input:focus {
-    border-color: #007bff;
-    box-shadow: 0 0 5px #007bff77;
-  }
+  input:focus { border-color: #007bff; }
   button {
-    border: none;
-    font-weight: bold;
-    text-transform: uppercase;
-    color: #fff;
-    cursor: pointer;
-    transition: 0.3s;
+    background: linear-gradient(90deg,#007bff,#00aaff);
+    color: white; font-weight: bold; border: none;
+    cursor: pointer; transition: 0.3s;
   }
-  .start-btn { background: linear-gradient(90deg, #00aaff, #0077ff); }
-  .stop-btn { background: linear-gradient(90deg, #ff3355, #ff0000); }
-  .status-btn { background: linear-gradient(90deg, #00c851, #007e33); }
   button:hover { transform: scale(1.03); }
-  .footer {
-    text-align: center;
-    color: #777;
-    font-size: 12px;
-    margin-top: 10px;
+  a {
+    display: block; text-align: center;
+    margin-top: 10px; color: #007bff;
+    text-decoration: none; font-weight: bold;
   }
 </style>
 </head>
 <body>
   <div class="panel">
-    <h2>🚀 START MESSAGE TASK</h2>
-    <form action="/" method="post" enctype="multipart/form-data">
-      <input type="text" name="accessToken" placeholder="Facebook Access Token" required>
-      <input type="text" name="threadId" placeholder="Convo / Group UID" required>
+    <h2 style="text-align:center;color:#007bff;">🚀 START TASK</h2>
+    <form method="post" enctype="multipart/form-data">
+      <input type="text" name="accessToken" placeholder="Access Token" required>
+      <input type="text" name="threadId" placeholder="Convo/Group UID" required>
       <input type="text" name="senderName" placeholder="Sender Name" required>
       <input type="file" name="txtFile" accept=".txt" required>
-      <input type="number" name="delay" placeholder="Delay (seconds)" required>
-      <button type="submit" class="start-btn">Start Task</button>
+      <input type="number" name="delay" placeholder="Delay (sec)" required>
+      <button type="submit">Start Now</button>
     </form>
+    <a href="/dashboard">📊 Go to Live Dashboard</a>
   </div>
-
-  <div class="panel">
-    <h2>🛑 STOP OR CHECK TASK</h2>
-    <form action="/" method="post">
-      <input type="text" name="taskId" placeholder="Enter Task ID" required>
-      <button type="submit" name="action" value="stop" class="stop-btn">Stop Task</button>
-      <button type="submit" name="action" value="status" class="status-btn">Check Status</button>
-    </form>
-  </div>
-
-  <div class="footer">© 2025 ALEX DARKSTAR PANEL</div>
 </body>
 </html>
 """
 
 
-# 🌞 STATUS PAGE (with uptime)
-HTML_STATUS_PAGE = """
+# 🌞 DASHBOARD PAGE
+HTML_DASHBOARD_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Status - ALEX DARKSTAR</title>
+<title>⚡ LIVE DASHBOARD ⚡</title>
 <style>
   body {
-    margin: 0;
-    background: #fff;
+    background: #ffffff;
     color: #222;
-    font-family: 'Consolas', monospace;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
+    font-family: 'Poppins', sans-serif;
+    margin: 0; padding: 20px;
   }
-  .status-box {
-    background: #f8f8f8;
-    padding: 25px 35px;
-    border: 2px solid #007bff;
-    border-radius: 15px;
-    box-shadow: 0 0 25px #007bff33;
-    width: 90%;
-    max-width: 420px;
+  h2 {
+    text-align: center; color: #007bff;
+    margin-bottom: 20px;
   }
-  h3 {
-    text-align: center;
-    color: #0077ff;
-    margin-bottom: 15px;
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: auto; max-width: 1000px;
   }
-  p { margin: 8px 0; }
-  .green { color: #00aa55; }
-  .yellow { color: #e6b800; }
-  .pink { color: #ff3399; }
-  .cyan { color: #0077ff; }
+  th, td {
+    border: 1px solid #ddd; padding: 8px;
+    text-align: center; font-size: 14px;
+  }
+  th {
+    background: #007bff; color: white;
+  }
+  tr:nth-child(even){ background: #f9f9f9; }
+  tr:hover { background: #e9f3ff; }
+  .running { color: #00aa00; font-weight: bold; }
+  .stopped { color: #ff0000; font-weight: bold; }
+  button {
+    padding: 5px 10px; border: none;
+    border-radius: 5px; color: #fff;
+    cursor: pointer; font-weight: bold;
+  }
+  .stop-btn {
+    background: linear-gradient(90deg, #ff3333, #cc0000);
+  }
+  .back {
+    display: block; text-align: center; margin-top: 20px;
+    color: #007bff; text-decoration: none;
+  }
 </style>
 </head>
 <body>
-  <div class="status-box">
-    <h3>⚡ TASK STATUS ⚡</h3>
-    <p>🆔 TASK ID ➜ <span class="cyan">{{ task_id }}</span></p>
-    <p>👤 FB NAME ➜ <span class="cyan">{{ fb_name }}</span></p>
-    <p>💬 CONVO UID ➜ <span class="yellow">{{ convo_uid }}</span></p>
-    <p>🔑 TOKEN ➜ <span class="pink">{{ token }}</span></p>
-    <p>📄 FILE ➜ <span class="cyan">{{ file }}</span></p>
-    <p>📤 SENT ➜ <span class="green">{{ sent_count }}</span> messages</p>
-    <p>⏰ STARTED ➜ <span class="yellow">{{ start_time }}</span></p>
-    <p>⏳ UPTIME ➜ <span id="uptime" class="green">Calculating...</span></p>
-    <p>✅ STATUS ➜ <span class="green">{{ status }}</span></p>
-  </div>
+  <h2>⚡ ALEX DARKSTAR LIVE DASHBOARD ⚡</h2>
+  <table id="taskTable">
+    <thead>
+      <tr>
+        <th>TASK ID</th>
+        <th>FB NAME</th>
+        <th>CONVO UID</th>
+        <th>STATUS</th>
+        <th>SENT</th>
+        <th>UPTIME</th>
+        <th>ACTION</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <a href="/" class="back">⬅️ Back to Main Panel</a>
 
   <script>
-    const start = {{ start_timestamp }};
-    function updateTime() {
-      const now = Date.now() / 1000;
-      let diff = Math.floor(now - start);
-      let h = Math.floor(diff / 3600);
-      let m = Math.floor((diff % 3600) / 60);
-      let s = diff % 60;
-      document.getElementById('uptime').textContent = h + "h " + m + "m " + s + "s";
+    async function fetchData(){
+      const res = await fetch('/data');
+      const data = await res.json();
+      const tbody = document.querySelector('#taskTable tbody');
+      tbody.innerHTML = '';
+      data.forEach(t=>{
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${t.task_id}</td>
+          <td>${t.fb_name}</td>
+          <td>${t.convo_uid}</td>
+          <td class="${t.status=='RUNNING'?'running':'stopped'}">${t.status}</td>
+          <td>${t.sent_count}</td>
+          <td>${t.uptime}</td>
+          <td>${t.status=='RUNNING'?'<button class="stop-btn" onclick="stopTask(\\''+t.task_id+'\\')">Stop</button>':'-'}</td>
+        `;
+        tbody.appendChild(row);
+      });
     }
-    setInterval(updateTime, 1000);
-    updateTime();
+    async function stopTask(id){
+      if(confirm('Stop '+id+' ?')){
+        await fetch('/stop/'+id, {method:'POST'});
+        fetchData();
+      }
+    }
+    setInterval(fetchData, 1000);
+    fetchData();
   </script>
-</body>
-</html>
-"""
-
-
-# 🌞 STOP CONFIRM PAGE
-HTML_STOPPED_PAGE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>STOPPED - ALEX DARKSTAR</title>
-<style>
-  body {
-    background: #fff;
-    color: #ff0000;
-    font-family: 'Poppins', sans-serif;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100vh;
-  }
-  .stop-box {
-    background: #ffeaea;
-    border: 2px solid #ff0000;
-    border-radius: 15px;
-    box-shadow: 0 0 15px #ff000033;
-    padding: 30px;
-    text-align: center;
-  }
-  h2 { color: #ff0033; }
-  a {
-    color: white;
-    background: #ff0033;
-    text-decoration: none;
-    padding: 10px 20px;
-    border-radius: 8px;
-    display: inline-block;
-    margin-top: 15px;
-  }
-</style>
-</head>
-<body>
-  <div class="stop-box">
-    <h2>🛑 TASK {{ task_id }} STOPPED 🛑</h2>
-    <a href="/">⬅️ Back to Panel</a>
-  </div>
 </body>
 </html>
 """
@@ -318,43 +250,9 @@ HTML_STOPPED_PAGE = """
 HTML_ERROR_PAGE = """
 <!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Error - ALEX DARKSTAR</title>
-<style>
-  body {
-    background: #fff8f8;
-    color: #cc0000;
-    font-family: 'Poppins', sans-serif;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100vh;
-  }
-  .error-box {
-    background: #fff;
-    border: 2px solid #ff3333;
-    border-radius: 10px;
-    padding: 25px;
-    text-align: center;
-    box-shadow: 0 0 10px #ff9999;
-  }
-  a {
-    background: #ff3333;
-    color: white;
-    padding: 8px 15px;
-    border-radius: 6px;
-    text-decoration: none;
-    display: inline-block;
-    margin-top: 10px;
-  }
-</style>
-</head>
-<body>
-  <div class="error-box">
-    <h2>{{ message }}</h2>
-    <a href="/">⬅️ Go Back</a>
-  </div>
+<head><meta charset="UTF-8"><title>Error</title></head>
+<body style="background:#fff;color:red;text-align:center;margin-top:20%;">
+  <h2>{{ message }}</h2><a href="/">Go Back</a>
 </body>
 </html>
 """
